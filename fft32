@@ -1,0 +1,122 @@
+// 32-point radix-2 Decimation-In-Time FFT
+// Fully combinational (unrolled), 5 stages x 16 butterflies = 80 bfly2 units.
+// Data format: Q1.15 signed fixed point for both input samples and
+// twiddle factors. Output is scaled by 1/32 relative to the mathematical
+// DFT (see bfly2.v) and comes out in natural order (input is bit-reversed
+// internally, which is free in hardware — it's just rewiring).
+//
+// NOTE: uses SystemVerilog-style unpacked array ports/signals
+// (input ... [0:31]). Supported by Vivado, Verilator, Questa/ModelSim,
+// and Icarus with -g2012. If your toolchain is strict Verilog-2001 only,
+// flatten these to a single [511:0] bus and slice with generate — ask
+// and I'll give you that version.
+module fft32 (
+    input  wire signed [15:0] in_re  [0:31],
+    input  wire signed [15:0] in_im  [0:31],
+    output wire signed [15:0] out_re [0:31],
+    output wire signed [15:0] out_im [0:31]
+);
+
+    genvar i, s, b;
+
+    // stage_re/im[0] = bit-reversed input, stage_re/im[5] = final output
+    wire signed [15:0] stage_re [0:5][0:31];
+    wire signed [15:0] stage_im [0:5][0:31];
+
+    // ---- bit-reversal reordering into stage 0 ----
+    function automatic [4:0] bit_reverse5(input [4:0] idx);
+        bit_reverse5 = {idx[0], idx[1], idx[2], idx[3], idx[4]};
+    endfunction
+
+    generate
+        for (i = 0; i < 32; i = i + 1) begin : BITREV
+            assign stage_re[0][i] = in_re[bit_reverse5(i[4:0])];
+            assign stage_im[0][i] = in_im[bit_reverse5(i[4:0])];
+        end
+    endgenerate
+
+    // ---- twiddle factor table: W32^k = cos(2*pi*k/32) - j*sin(2*pi*k/32) ----
+    // Q1.15, k = 0..15 (all indices needed at every stage reduce to this range)
+    function automatic signed [15:0] tw_re(input integer idx);
+        case (idx)
+            0:  tw_re =  16'sd32767;
+            1:  tw_re =  16'sd32137;
+            2:  tw_re =  16'sd30273;
+            3:  tw_re =  16'sd27245;
+            4:  tw_re =  16'sd23170;
+            5:  tw_re =  16'sd18204;
+            6:  tw_re =  16'sd12539;
+            7:  tw_re =  16'sd6393;
+            8:  tw_re =  16'sd0;
+            9:  tw_re = -16'sd6393;
+            10: tw_re = -16'sd12539;
+            11: tw_re = -16'sd18204;
+            12: tw_re = -16'sd23170;
+            13: tw_re = -16'sd27245;
+            14: tw_re = -16'sd30273;
+            15: tw_re = -16'sd32137;
+            default: tw_re = 16'sd0;
+        endcase
+    endfunction
+
+    function automatic signed [15:0] tw_im(input integer idx);
+        case (idx)
+            0:  tw_im =  16'sd0;
+            1:  tw_im = -16'sd6393;
+            2:  tw_im = -16'sd12539;
+            3:  tw_im = -16'sd18204;
+            4:  tw_im = -16'sd23170;
+            5:  tw_im = -16'sd27245;
+            6:  tw_im = -16'sd30273;
+            7:  tw_im = -16'sd32137;
+            8:  tw_im = -16'sd32767;
+            9:  tw_im = -16'sd32137;
+            10: tw_im = -16'sd30273;
+            11: tw_im = -16'sd27245;
+            12: tw_im = -16'sd23170;
+            13: tw_im = -16'sd18204;
+            14: tw_im = -16'sd12539;
+            15: tw_im = -16'sd6393;
+            default: tw_im = 16'sd0;
+        endcase
+    endfunction
+
+    // ---- 5 stages, 16 butterflies each ----
+    generate
+        for (s = 1; s <= 5; s = s + 1) begin : STAGE
+            localparam integer M    = (1 << s);
+            localparam integer HALF = M >> 1;
+
+            for (b = 0; b < 16; b = b + 1) begin : BFLY
+                localparam integer G     = b / HALF;
+                localparam integer J     = b % HALF;
+                localparam integer K     = G * M + J;
+                localparam integer K2    = K + HALF;
+                localparam integer TWIDX = J * (32 / M);
+
+                bfly2 #(
+                    .TW_RE(tw_re(TWIDX)),
+                    .TW_IM(tw_im(TWIDX))
+                ) u_bfly (
+                    .a_re     (stage_re[s-1][K]),
+                    .a_im     (stage_im[s-1][K]),
+                    .b_re     (stage_re[s-1][K2]),
+                    .b_im     (stage_im[s-1][K2]),
+                    .out_a_re (stage_re[s][K]),
+                    .out_a_im (stage_im[s][K]),
+                    .out_b_re (stage_re[s][K2]),
+                    .out_b_im (stage_im[s][K2])
+                );
+            end
+        end
+    endgenerate
+
+    // ---- output ----
+    generate
+        for (i = 0; i < 32; i = i + 1) begin : OUTASSIGN
+            assign out_re[i] = stage_re[5][i];
+            assign out_im[i] = stage_im[5][i];
+        end
+    endgenerate
+
+endmodule

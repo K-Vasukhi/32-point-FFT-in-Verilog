@@ -1,0 +1,35 @@
+// Radix-2 DIT butterfly, fixed-point Q1.15
+//   out_a = (a + t) >>> 1      t = b * W  (complex multiply)
+//   out_b = (a - t) >>> 1
+// The final >>> 1 rescales by 1/2 at every stage so a 32-point FFT
+// (5 stages) naturally comes out scaled by 1/32 overall — this is the
+// standard "unconditional scaling" trick used to guarantee no overflow
+// for any bounded input, at the cost of a bit of extra quantization noise.
+module bfly2 #(
+    parameter signed [15:0] TW_RE = 16'sd0,
+    parameter signed [15:0] TW_IM = 16'sd0
+) (
+    input  wire signed [15:0] a_re, a_im,   // untouched operand
+    input  wire signed [15:0] b_re, b_im,   // operand multiplied by twiddle
+    output wire signed [15:0] out_a_re, out_a_im,
+    output wire signed [15:0] out_b_re, out_b_im
+);
+
+    wire signed [31:0] p1, p2, p3, p4;
+    wire signed [15:0] t_re, t_im;
+
+    assign p1 = b_re * TW_RE;
+    assign p2 = b_im * TW_IM;
+    assign p3 = b_re * TW_IM;
+    assign p4 = b_im * TW_RE;
+
+    // Q1.15 x Q1.15 = Q2.30 -> shift right 15 to get back to Q1.15
+    assign t_re = (p1 - p2) >>> 15;
+    assign t_im = (p3 + p4) >>> 15;
+
+    assign out_a_re = (a_re + t_re) >>> 1;
+    assign out_a_im = (a_im + t_im) >>> 1;
+    assign out_b_re = (a_re - t_re) >>> 1;
+    assign out_b_im = (a_im - t_im) >>> 1;
+
+endmodule
